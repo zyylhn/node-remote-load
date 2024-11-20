@@ -1,14 +1,19 @@
 package remote_load
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/kataras/golog"
+	"github.com/zyylhn/getlocaladdr"
 	"github.com/zyylhn/node-remote-load/moduleArgs"
 	"github.com/zyylhn/node-tree/admin"
 	"github.com/zyylhn/node-tree/admin/initial"
+	"io"
 	"math/rand"
+	"net"
 	"os"
 	"regexp"
 	"strconv"
@@ -52,10 +57,13 @@ func (r *RemoteLoad) StartNodeManager(ctx context.Context, pushChan chan interfa
 
 // RemoteLoadOnNode 在指定节点上加载程序
 func (r *RemoteLoad) RemoteLoadOnNode(ctx context.Context, module ModuleLoad, node string, resultChan chan []byte) ([]byte, error) {
-	return nil, nil
+	return r.remoteLoad(ctx, module, node, resultChan)
 }
 
 func (r *RemoteLoad) remoteLoad(ctx context.Context, module ModuleLoad, node string, resultChan chan []byte) ([]byte, error) {
+	if resultChan != nil {
+		defer close(resultChan)
+	}
 	newCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	//根据接口获取参数
@@ -70,11 +78,19 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, module ModuleLoad, node str
 		var request moduleArgs.RequestInfo
 		if arg.ArgType == moduleArgs.OnlyBackward {
 			request.Type = moduleArgs.OnlyBackward
-			//todo 仅生成一个反向端口转发
+			rPort, err := r.startBackWard(ctx, node, string(arg.Arg))
+			if err != nil {
+				return nil, err
+			}
+			request.Addr = fmt.Sprintf("127.0.0.1:%v", rPort)
 		} else if arg.ArgType == moduleArgs.PushResultAddr {
 			//需要指定推送结果的地址，模块接收到此类型的参数将会向指定地址推送消息
 			request.Type = moduleArgs.PushResultAddr
-			//todo 开启服务器并进行反向端口转发，将结果送到channel中
+			rPort, err := r.createReceiveHandle(ctx, resultChan, node)
+			if err != nil {
+				return nil, err
+			}
+			request.Addr = fmt.Sprintf("127.0.0.1:%v", rPort)
 		} else if len(arg.Arg) > 512 || arg.ArgType == moduleArgs.ArgsAddr {
 			//使用参数服务器
 			if arg.ArgType != 0 {
@@ -82,11 +98,11 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, module ModuleLoad, node str
 			} else {
 				request.Type = moduleArgs.ArgsAddr
 			}
-			//todo 生成一个参数服务器
-			//request.Addr, err = GenerateArgsServer(arg.Arg, mgr, route, uuid, &newCtx, log)
-			//if err != nil {
-			//	return nil, err
-			//}
+			rPort, err := r.createArgsServer(ctx, arg.Arg, node)
+			if err != nil {
+				return nil, err
+			}
+			request.Addr = fmt.Sprintf("127.0.0.1:%v", rPort)
 		} else {
 			//使用正常方式传输
 			if arg.ArgType != 0 {
@@ -133,6 +149,141 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, module ModuleLoad, node str
 		return nil, err
 	}
 	return r.regexpFitResult(re)
+}
+
+func (r *RemoteLoad) createArgsServer(ctx context.Context, arg []byte, uuid string) (string, error) {
+	listener, err := r.startListener(ctx)
+	if err != nil {
+		return "", err
+	}
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				if strings.Contains(err.Error(), "use of closed network connection") { //listener关闭
+					break
+				} else {
+					r.log.Errorf("[server based on Backward(listen on admin:%v,agent:%v)]LocalServer accept error:"+err.Error(), listener.Addr().String())
+					break
+				}
+			}
+			r.argServerHandle(ctx, conn, arg)
+		}
+	}()
+	return r.startBackWard(ctx, uuid, listener.Addr().String())
+}
+
+func (r *RemoteLoad) createReceiveHandle(ctx context.Context, receiveChan chan []byte, uuid string) (string, error) {
+	listener, err := r.startListener(ctx)
+	if err != nil {
+		return "", err
+	}
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				if strings.Contains(err.Error(), "use of closed network connection") { //listener关闭
+					break
+				} else {
+					r.log.Errorf("[server based on Backward(listen on admin:%v,agent:%v)]LocalServer accept error:"+err.Error(), listener.Addr().String())
+					break
+				}
+			}
+			r.receiveHandle(ctx, conn, receiveChan)
+		}
+	}()
+	return r.startBackWard(ctx, uuid, listener.Addr().String())
+}
+
+func (r *RemoteLoad) receiveHandle(ctx context.Context, conn net.Conn, receiveChan chan []byte) {
+	defer func() {
+		_ = conn.Close()
+	}()
+	reader := bufio.NewReader(conn)
+	for {
+		stringCh := make(chan []byte)
+		errorCh := make(chan error)
+		go func() {
+			defer close(stringCh)
+			defer close(errorCh)
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
+				errorCh <- err
+			} else {
+				stringCh <- line
+			}
+		}()
+		select {
+		case <-ctx.Done(): //不能因为ctx结束而导致有数据没有送进去从而导致缺失数据
+			r.log.Debugf("[server based on Backward(listen on admin:%v)]The receiving server detects that ctx ends, terminates the forwarding and closes the channel", conn.LocalAddr())
+			return
+		case line := <-stringCh:
+			line = bytes.TrimSuffix(line, []byte("\n"))
+			r.log.Debugf("[server based on Backward(listen on admin:%v)]receive server receive data form connect %v->%v and will write to channel:%v", conn.LocalAddr(), conn.LocalAddr(), conn.RemoteAddr(), line)
+			receiveChan <- line
+		case err := <-errorCh:
+			if err != nil {
+				if err == io.EOF {
+					r.log.Debugf("[server based on Backward(listen on admin:%v)]The connection is closed and the data read is complete", conn.LocalAddr())
+					return
+				}
+				r.log.Errorf("[server based on Backward(listen on admin:%v)]ReceiveServer read from connect error:%v", conn.LocalAddr(), err.Error())
+				return
+			}
+		}
+	}
+}
+
+func (r *RemoteLoad) argServerHandle(ctx context.Context, conn net.Conn, arg []byte) {
+	defer func() {
+		_ = conn.Close()
+	}()
+	buf := make([]byte, 30720)
+	buffer := bytes.NewBuffer(arg)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		n, err := buffer.Read(buf)
+		if err != nil {
+			if err == io.EOF {
+				break
+			} else {
+				r.log.Errorf("[server based on Backward(listen on admin:%v)]Description The parameter server failed to read parameters:%v", conn.LocalAddr().String(), err.Error())
+			}
+		}
+		_, err = conn.Write(buf[:n])
+		if err != nil {
+			r.log.Errorf("[server based on Backward(listen on admin:%v)]The parameter server fails to write parameters into the connection:%v", conn.LocalAddr(), err.Error())
+		}
+	}
+}
+
+func (r *RemoteLoad) startListener(ctx context.Context) (net.Listener, error) {
+G:
+	port, err := getlocaladdr.GetFreePortWithError(nil)
+	if err != nil {
+		return nil, err
+	}
+	r.log.Debugf("[server based on Backward]startServer on admin try port:%v", port)
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%v", port))
+	if err != nil {
+		if strings.Contains(err.Error(), "bind: address already in use") {
+			r.log.Error("[server based on Backward]startServer listen error:%" + err.Error())
+			time.Sleep(time.Millisecond * 500)
+			goto G
+		}
+		return nil, err
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = listener.Close()
+		}
+	}()
+	return listener, nil
 }
 
 // 在指定节点上开启一个连接lAddr的反向端口转发，并返回在agent上开启的端口号

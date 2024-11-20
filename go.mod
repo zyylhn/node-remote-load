@@ -11,6 +11,7 @@ require (
 	github.com/gofrs/uuid v4.4.0+incompatible // indirect
 	github.com/kataras/pio v0.0.13 // indirect
 	github.com/zyylhn/bufferChannel v1.1.0 // indirect
+	github.com/zyylhn/getlocaladdr v1.0.2 // indirect
 	golang.org/x/sys v0.27.0 // indirect
 	golang.org/x/text v0.20.0 // indirect
 )
