@@ -39,14 +39,12 @@ type ModuleLoad interface {
 
 type RemoteLoad struct {
 	*admin.NodeManager
-	log *golog.Logger
 }
 
 func NewRemoteLoad(op *initial.Options, log *golog.Logger) *RemoteLoad {
 	re := &RemoteLoad{
 		NodeManager: admin.NewAdmin(op, log.Clone()),
 	}
-	re.log = log.SetPrefix("<remote-load> ")
 
 	return re
 }
@@ -56,11 +54,13 @@ func (r *RemoteLoad) StartNodeManager(ctx context.Context, pushChan chan interfa
 }
 
 // RemoteLoadOnNode 在指定节点上加载程序
-func (r *RemoteLoad) RemoteLoadOnNode(ctx context.Context, module ModuleLoad, node string, resultChan chan []byte) ([]byte, error) {
-	return r.remoteLoad(ctx, module, node, resultChan)
+func (r *RemoteLoad) RemoteLoadOnNode(ctx context.Context, module ModuleLoad, node string, resultChan chan []byte, log *golog.Logger) ([]byte, error) {
+	return r.remoteLoad(ctx, module, node, resultChan, log)
 }
 
-func (r *RemoteLoad) remoteLoad(ctx context.Context, module ModuleLoad, node string, resultChan chan []byte) ([]byte, error) {
+func (r *RemoteLoad) remoteLoad(ctx context.Context, module ModuleLoad, node string, resultChan chan []byte, log *golog.Logger) ([]byte, error) {
+	log = log.Clone()
+	log.SetPrefix(fmt.Sprintf("%v <%v:%v>", log.Prefix, "remoteLoad", module.GetInfo().Name))
 	if resultChan != nil {
 		defer close(resultChan)
 	}
@@ -78,7 +78,7 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, module ModuleLoad, node str
 		var request moduleArgs.RequestInfo
 		if arg.ArgType == moduleArgs.OnlyBackward {
 			request.Type = moduleArgs.OnlyBackward
-			rPort, err := r.startBackWard(ctx, node, string(arg.Arg))
+			rPort, err := r.startBackWard(ctx, node, string(arg.Arg), log)
 			if err != nil {
 				return nil, err
 			}
@@ -86,7 +86,7 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, module ModuleLoad, node str
 		} else if arg.ArgType == moduleArgs.PushResultAddr {
 			//需要指定推送结果的地址，模块接收到此类型的参数将会向指定地址推送消息
 			request.Type = moduleArgs.PushResultAddr
-			rPort, err := r.createReceiveHandle(ctx, resultChan, node)
+			rPort, err := r.createReceiveHandle(ctx, resultChan, node, log)
 			if err != nil {
 				return nil, err
 			}
@@ -98,7 +98,7 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, module ModuleLoad, node str
 			} else {
 				request.Type = moduleArgs.ArgsAddr
 			}
-			rPort, err := r.createArgsServer(ctx, arg.Arg, node)
+			rPort, err := r.createArgsServer(ctx, arg.Arg, node, log)
 			if err != nil {
 				return nil, err
 			}
@@ -151,8 +151,8 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, module ModuleLoad, node str
 	return r.regexpFitResult(re)
 }
 
-func (r *RemoteLoad) createArgsServer(ctx context.Context, arg []byte, uuid string) (string, error) {
-	listener, err := r.startListener(ctx)
+func (r *RemoteLoad) createArgsServer(ctx context.Context, arg []byte, uuid string, log *golog.Logger) (string, error) {
+	listener, err := r.startListener(ctx, log)
 	if err != nil {
 		return "", err
 	}
@@ -163,18 +163,18 @@ func (r *RemoteLoad) createArgsServer(ctx context.Context, arg []byte, uuid stri
 				if strings.Contains(err.Error(), "use of closed network connection") { //listener关闭
 					break
 				} else {
-					r.log.Errorf("[server based on Backward(listen on admin:%v,agent:%v)]LocalServer accept error:"+err.Error(), listener.Addr().String())
+					log.Errorf("[server based on Backward(listen on admin:%v,agent:%v)]LocalServer accept error:"+err.Error(), listener.Addr().String())
 					break
 				}
 			}
-			r.argServerHandle(ctx, conn, arg)
+			r.argServerHandle(ctx, conn, arg, log)
 		}
 	}()
-	return r.startBackWard(ctx, uuid, listener.Addr().String())
+	return r.startBackWard(ctx, uuid, listener.Addr().String(), log)
 }
 
-func (r *RemoteLoad) createReceiveHandle(ctx context.Context, receiveChan chan []byte, uuid string) (string, error) {
-	listener, err := r.startListener(ctx)
+func (r *RemoteLoad) createReceiveHandle(ctx context.Context, receiveChan chan []byte, uuid string, log *golog.Logger) (string, error) {
+	listener, err := r.startListener(ctx, log)
 	if err != nil {
 		return "", err
 	}
@@ -185,17 +185,17 @@ func (r *RemoteLoad) createReceiveHandle(ctx context.Context, receiveChan chan [
 				if strings.Contains(err.Error(), "use of closed network connection") { //listener关闭
 					break
 				} else {
-					r.log.Errorf("[server based on Backward(listen on admin:%v,agent:%v)]LocalServer accept error:"+err.Error(), listener.Addr().String())
+					log.Errorf("[server based on Backward(listen on admin:%v,agent:%v)]LocalServer accept error:"+err.Error(), listener.Addr().String())
 					break
 				}
 			}
-			r.receiveHandle(ctx, conn, receiveChan)
+			r.receiveHandle(ctx, conn, receiveChan, log)
 		}
 	}()
-	return r.startBackWard(ctx, uuid, listener.Addr().String())
+	return r.startBackWard(ctx, uuid, listener.Addr().String(), log)
 }
 
-func (r *RemoteLoad) receiveHandle(ctx context.Context, conn net.Conn, receiveChan chan []byte) {
+func (r *RemoteLoad) receiveHandle(ctx context.Context, conn net.Conn, receiveChan chan []byte, log *golog.Logger) {
 	defer func() {
 		_ = conn.Close()
 	}()
@@ -215,26 +215,26 @@ func (r *RemoteLoad) receiveHandle(ctx context.Context, conn net.Conn, receiveCh
 		}()
 		select {
 		case <-ctx.Done(): //不能因为ctx结束而导致有数据没有送进去从而导致缺失数据
-			r.log.Debugf("[server based on Backward(listen on admin:%v)]The receiving server detects that ctx ends, terminates the forwarding and closes the channel", conn.LocalAddr())
+			log.Debugf("[server based on Backward(listen on admin:%v)]The receiving server detects that ctx ends, terminates the forwarding and closes the channel", conn.LocalAddr())
 			return
 		case line := <-stringCh:
 			line = bytes.TrimSuffix(line, []byte("\n"))
-			r.log.Debugf("[server based on Backward(listen on admin:%v)]receive server receive data form connect %v->%v and will write to channel:%v", conn.LocalAddr(), conn.LocalAddr(), conn.RemoteAddr(), line)
+			log.Debugf("[server based on Backward(listen on admin:%v)]receive server receive data form connect %v->%v and will write to channel:%v", conn.LocalAddr(), conn.LocalAddr(), conn.RemoteAddr(), line)
 			receiveChan <- line
 		case err := <-errorCh:
 			if err != nil {
 				if err == io.EOF {
-					r.log.Debugf("[server based on Backward(listen on admin:%v)]The connection is closed and the data read is complete", conn.LocalAddr())
+					log.Debugf("[server based on Backward(listen on admin:%v)]The connection is closed and the data read is complete", conn.LocalAddr())
 					return
 				}
-				r.log.Errorf("[server based on Backward(listen on admin:%v)]ReceiveServer read from connect error:%v", conn.LocalAddr(), err.Error())
+				log.Errorf("[server based on Backward(listen on admin:%v)]ReceiveServer read from connect error:%v", conn.LocalAddr(), err.Error())
 				return
 			}
 		}
 	}
 }
 
-func (r *RemoteLoad) argServerHandle(ctx context.Context, conn net.Conn, arg []byte) {
+func (r *RemoteLoad) argServerHandle(ctx context.Context, conn net.Conn, arg []byte, log *golog.Logger) {
 	defer func() {
 		_ = conn.Close()
 	}()
@@ -251,27 +251,27 @@ func (r *RemoteLoad) argServerHandle(ctx context.Context, conn net.Conn, arg []b
 			if err == io.EOF {
 				break
 			} else {
-				r.log.Errorf("[server based on Backward(listen on admin:%v)]Description The parameter server failed to read parameters:%v", conn.LocalAddr().String(), err.Error())
+				log.Errorf("[server based on Backward(listen on admin:%v)]Description The parameter server failed to read parameters:%v", conn.LocalAddr().String(), err.Error())
 			}
 		}
 		_, err = conn.Write(buf[:n])
 		if err != nil {
-			r.log.Errorf("[server based on Backward(listen on admin:%v)]The parameter server fails to write parameters into the connection:%v", conn.LocalAddr(), err.Error())
+			log.Errorf("[server based on Backward(listen on admin:%v)]The parameter server fails to write parameters into the connection:%v", conn.LocalAddr(), err.Error())
 		}
 	}
 }
 
-func (r *RemoteLoad) startListener(ctx context.Context) (net.Listener, error) {
+func (r *RemoteLoad) startListener(ctx context.Context, log *golog.Logger) (net.Listener, error) {
 G:
 	port, err := getlocaladdr.GetFreePortWithError(nil)
 	if err != nil {
 		return nil, err
 	}
-	r.log.Debugf("[server based on Backward]startServer on admin try port:%v", port)
+	log.Debugf("[server based on Backward]startServer on admin try port:%v", port)
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%v", port))
 	if err != nil {
 		if strings.Contains(err.Error(), "bind: address already in use") {
-			r.log.Error("[server based on Backward]startServer listen error:%" + err.Error())
+			log.Error("[server based on Backward]startServer listen error:%" + err.Error())
 			time.Sleep(time.Millisecond * 500)
 			goto G
 		}
@@ -287,7 +287,7 @@ G:
 }
 
 // 在指定节点上开启一个连接lAddr的反向端口转发，并返回在agent上开启的端口号
-func (r *RemoteLoad) startBackWard(ctx context.Context, uuid string, lAddr string) (string, error) {
+func (r *RemoteLoad) startBackWard(ctx context.Context, uuid string, lAddr string, log *golog.Logger) (string, error) {
 	var n int
 	var success bool
 	//在目标上监听端口做转发可能出现端口被占用的情况，这栗会采用从新获取端口多次尝试的方式
@@ -299,7 +299,7 @@ func (r *RemoteLoad) startBackWard(ctx context.Context, uuid string, lAddr strin
 			//already in use 是unix中的报错，only one是windows中的报错
 			if strings.Contains(err.Error(), "address already in use") || strings.Contains(err.Error(), "Only one usage of each socket address") {
 				time.Sleep(time.Millisecond * 100)
-				r.log.Warn(fmt.Sprintf("[server based on Backward(listen on admin:%v,agent:%v)]listen port %v on %v worn:already in use,start retry", lAddr, n, n, uuid))
+				log.Warnf("[server based on Backward(listen on admin:%v,agent:%v)]listen port %v on %v worn:already in use,start retry", lAddr, n, n, uuid)
 				continue
 			} else {
 				return "", err
@@ -312,6 +312,7 @@ func (r *RemoteLoad) startBackWard(ctx context.Context, uuid string, lAddr strin
 	if !success {
 		return "", fmt.Errorf("99 attempts to listen to random ports on agent%v failed. The reasons for the failure are described in the log", uuid)
 	}
+	log.Infof("[backward(listen on admin:%v,agent:%v(port:%v))]start success", lAddr, uuid, n)
 	go func() {
 		select {
 		case <-ctx.Done():
