@@ -219,7 +219,7 @@ func (r *RemoteLoad) receiveHandle(ctx context.Context, conn net.Conn, receiveCh
 			return
 		case line := <-stringCh:
 			line = bytes.TrimSuffix(line, []byte("\n"))
-			log.Debugf("[server based on Backward(listen on admin:%v)]receive server receive data form connect %v->%v and will write to channel:%v", conn.LocalAddr(), conn.LocalAddr(), conn.RemoteAddr(), line)
+			log.Debugf("[server based on Backward(listen on admin:%v)]receive server receive data form connect %v->%v and will write to channel:%s", conn.LocalAddr(), conn.LocalAddr(), conn.RemoteAddr(), line)
 			receiveChan <- line
 		case err := <-errorCh:
 			if err != nil {
