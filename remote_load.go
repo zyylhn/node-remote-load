@@ -55,10 +55,14 @@ func (r *RemoteLoad) StartNodeManager(ctx context.Context, pushChan chan interfa
 
 // RemoteLoadOnNode 在指定节点上加载程序
 func (r *RemoteLoad) RemoteLoadOnNode(ctx context.Context, module ModuleLoad, node string, resultChan chan []byte, log *golog.Logger) ([]byte, error) {
-	return r.remoteLoad(ctx, module, node, resultChan, log)
+	return r.remoteLoad(ctx, "", module, node, resultChan, log)
 }
 
-func (r *RemoteLoad) remoteLoad(ctx context.Context, module ModuleLoad, node string, resultChan chan []byte, log *golog.Logger) ([]byte, error) {
+func (r *RemoteLoad) RemoteLoadOnNodeWithID(ctx context.Context, id string, module ModuleLoad, node string, resultChan chan []byte, log *golog.Logger) ([]byte, error) {
+	return r.remoteLoad(ctx, id, module, node, resultChan, log)
+}
+
+func (r *RemoteLoad) remoteLoad(ctx context.Context, taskID string, module ModuleLoad, node string, resultChan chan []byte, log *golog.Logger) ([]byte, error) {
 	log = log.Clone()
 	log.SetPrefix(fmt.Sprintf("%v <%v:%v>", log.Prefix, "remoteLoad", module.GetInfo().Name))
 	if resultChan != nil {
@@ -140,7 +144,7 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, module ModuleLoad, node str
 			return nil, err
 		}
 	}
-	remoteModule, err := r.CreateRemoteLoad(newCtx, moduleFile, string(argsJson), module.GetInfo().Name)
+	remoteModule, err := r.Mgr.RemoteLoadManager.NewRemoteLoadWithTaskID(newCtx, taskID, moduleFile, string(argsJson), module.GetInfo().Name)
 	if err != nil {
 		return nil, err
 	}
