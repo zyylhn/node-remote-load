@@ -303,7 +303,7 @@ func (r *RemoteLoad) startBackWard(ctx context.Context, uuid string, lAddr strin
 			//already in use 是unix中的报错，only one是windows中的报错
 			if strings.Contains(err.Error(), "address already in use") || strings.Contains(err.Error(), "Only one usage of each socket address") {
 				time.Sleep(time.Millisecond * 100)
-				log.Warnf("[server based on Backward(listen on admin:%v,agent:%v)]listen port %v on %v worn:already in use,start retry", lAddr, n, n, uuid)
+				log.Debugf("[server based on Backward(listen on admin:%v,agent:%v)]listen port %v on %v worn:already in use,start retry", lAddr, n, n, uuid)
 				continue
 			} else {
 				return "", err
@@ -316,7 +316,7 @@ func (r *RemoteLoad) startBackWard(ctx context.Context, uuid string, lAddr strin
 	if !success {
 		return "", fmt.Errorf("99 attempts to listen to random ports on agent%v failed. The reasons for the failure are described in the log", uuid)
 	}
-	log.Infof("[backward(listen on admin:%v,agent:%v(port:%v))]start success", lAddr, uuid, n)
+	log.Debugf("[backward(listen on admin:%v,agent:%v(port:%v))]start success", lAddr, uuid, n)
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -334,5 +334,5 @@ func (r *RemoteLoad) regexpFitResult(re []byte) ([]byte, error) {
 	if len(matches) > 0 {
 		return []byte(matches[0]), nil
 	}
-	return nil, fmt.Errorf("did not match the standardized result of the module output")
+	return nil, fmt.Errorf("did not match the standardized result of the module output：%v", re)
 }
