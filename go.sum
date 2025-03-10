@@ -8,10 +8,8 @@ github.com/zyylhn/bufferChannel v1.1.0 h1:yAYI5i9BiJ4wAPBsIoOkHwQWlHE7Tq/PZmvVOV
 github.com/zyylhn/bufferChannel v1.1.0/go.mod h1:t1pAD+9TLblKgS4/gtNPO9iFWUCKgbqvc9r3ep3NFW4=
 github.com/zyylhn/getlocaladdr v1.0.2 h1:JN6aV5K5WdF3LETr3d/gfujB+6zba2S5zhdUTlx4008=
 github.com/zyylhn/getlocaladdr v1.0.2/go.mod h1:atDPqhp047ENROBajWYcGRPCrZYnwyAKjxHtktwlA38=
-github.com/zyylhn/node-tree v0.0.6 h1:2Osuw+xnD1EgkY5FAQFjlI5cWi7njERRSBn4+Z0/bvY=
-github.com/zyylhn/node-tree v0.0.6/go.mod h1:4lq/ThXBHjpI7kBoXgHHBcgoSTjJq9WPj0XmSHBxCcU=
-github.com/zyylhn/node-tree v0.0.7 h1:f0BQscOLA6O+tkxokiErdyGIORm6ascVSxFTDrqhO0s=
-github.com/zyylhn/node-tree v0.0.7/go.mod h1:4lq/ThXBHjpI7kBoXgHHBcgoSTjJq9WPj0XmSHBxCcU=
+github.com/zyylhn/node-tree v0.0.8 h1:C2ZHff4F0pWqumKQHqLnTk0+tFKuFbuJh+gVla9F2oE=
+github.com/zyylhn/node-tree v0.0.8/go.mod h1:4lq/ThXBHjpI7kBoXgHHBcgoSTjJq9WPj0XmSHBxCcU=
 golang.org/x/sys v0.27.0 h1:wBqf8DvsY9Y/2P8gAfPDEYNuS30J4lPHJxXSb/nJZ+s=
 golang.org/x/sys v0.27.0/go.mod h1:/VUhepiaJMQUp4+oa/7Zr1D23ma6VTLIYjOOTFZPUcA=
 golang.org/x/text v0.20.0 h1:gK/Kv2otX8gz+wn7Rmb3vT96ZwuoxnQlY+HlJVj7Qug=

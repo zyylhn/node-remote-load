@@ -5,7 +5,7 @@ go 1.22.8
 require (
 	github.com/kataras/golog v0.1.12
 	github.com/zyylhn/getlocaladdr v1.0.2
-	github.com/zyylhn/node-tree v0.0.7
+	github.com/zyylhn/node-tree v0.0.8
 )
 
 require (
