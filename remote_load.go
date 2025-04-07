@@ -202,6 +202,10 @@ func (r *RemoteLoad) createReceiveHandle(ctx context.Context, receiveChan chan [
 func (r *RemoteLoad) receiveHandle(ctx context.Context, conn net.Conn, receiveChan chan []byte, log *golog.Logger) {
 	defer func() {
 		_ = conn.Close()
+		//还是有可能触发向关闭的channel发送数据
+		if err := recover(); err != nil {
+			log.Errorf("[server based on Backward(listen on admin:%v)]receiveHandle panic:%v", conn.LocalAddr(), err)
+		}
 	}()
 	reader := bufio.NewReader(conn)
 	for {
@@ -224,7 +228,12 @@ func (r *RemoteLoad) receiveHandle(ctx context.Context, conn net.Conn, receiveCh
 		case line := <-stringCh:
 			line = bytes.TrimSuffix(line, []byte("\n"))
 			log.Debugf("[server based on Backward(listen on admin:%v)]receive server receive data form connect %v->%v and will write to channel:%s", conn.LocalAddr(), conn.LocalAddr(), conn.RemoteAddr(), line)
-			receiveChan <- line
+			select {
+			case <-ctx.Done():
+				log.Debugf("[server based on Backward(listen on admin:%v)]The receiving server detects that ctx ends, terminates the forwarding and closes the channel", conn.LocalAddr())
+				return
+			case receiveChan <- line:
+			}
 		case err := <-errorCh:
 			if err != nil {
 				if err == io.EOF {
