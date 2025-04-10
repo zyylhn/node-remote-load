@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -65,8 +66,30 @@ func (r *RemoteLoad) RemoteLoadOnNodeWithID(ctx context.Context, id string, modu
 func (r *RemoteLoad) remoteLoad(ctx context.Context, taskID string, module ModuleLoad, node string, resultChan chan []byte, log *golog.Logger) ([]byte, error) {
 	log = log.Clone()
 	log.SetPrefix(fmt.Sprintf("%v <%v:%v>", log.Prefix, "remoteLoad", module.GetInfo().Name))
+	var wg = &sync.WaitGroup{}
+	var timeOutChan = make(chan struct{})
 	if resultChan != nil {
-		defer close(resultChan)
+		defer func() {
+			done := make(chan struct{})
+			// 远程加载已结束，等待数据传输完成
+			go func() {
+				wg.Wait()
+				close(done)
+			}()
+
+			select {
+			case <-done:
+				close(timeOutChan)
+			case <-time.After(1 * time.Minute): //超时的话主动终止传输，触发此操作会导致没传输完成数据丢失。但是一般出现此情况可能是特殊网络转发延迟过高，或者程序自身bug
+				log.Errorf("remoteLoad read module result timeout,initiative terminate")
+				close(timeOutChan)
+				// 然后继续等 wg.Wait() 真正完成
+				<-done
+			}
+			close(resultChan)
+		}()
+	} else {
+		close(timeOutChan)
 	}
 	newCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -90,7 +113,7 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, taskID string, module Modul
 		} else if arg.ArgType == moduleArgs.PushResultAddr {
 			//需要指定推送结果的地址，模块接收到此类型的参数将会向指定地址推送消息
 			request.Type = moduleArgs.PushResultAddr
-			rPort, err := r.createReceiveHandle(ctx, resultChan, node, log)
+			rPort, err := r.createReceiveHandle(ctx, timeOutChan, resultChan, node, log, wg)
 			if err != nil {
 				return nil, err
 			}
@@ -177,7 +200,7 @@ func (r *RemoteLoad) createArgsServer(ctx context.Context, arg []byte, uuid stri
 	return r.startBackWard(ctx, uuid, listener.Addr().String(), log)
 }
 
-func (r *RemoteLoad) createReceiveHandle(ctx context.Context, receiveChan chan []byte, uuid string, log *golog.Logger) (string, error) {
+func (r *RemoteLoad) createReceiveHandle(ctx context.Context, timeOutChan chan struct{}, receiveChan chan []byte, uuid string, log *golog.Logger, wg *sync.WaitGroup) (string, error) {
 	listener, err := r.startListener(ctx, log)
 	if err != nil {
 		return "", err
@@ -193,15 +216,22 @@ func (r *RemoteLoad) createReceiveHandle(ctx context.Context, receiveChan chan [
 					break
 				}
 			}
-			r.receiveHandle(ctx, conn, receiveChan, log)
+			//监控数据是否传输完成
+			wg.Add(1)
+			r.receiveHandle(timeOutChan, conn, receiveChan, log)
+			wg.Done()
 		}
 	}()
 	return r.startBackWard(ctx, uuid, listener.Addr().String(), log)
 }
 
-func (r *RemoteLoad) receiveHandle(ctx context.Context, conn net.Conn, receiveChan chan []byte, log *golog.Logger) {
+func (r *RemoteLoad) receiveHandle(timeOutChan chan struct{}, conn net.Conn, receiveChan chan []byte, log *golog.Logger) {
 	defer func() {
 		_ = conn.Close()
+		//还是有可能触发向关闭的channel发送数据
+		if err := recover(); err != nil {
+			log.Errorf("[server based on Backward(listen on admin:%v)]receiveHandle panic:%v", conn.LocalAddr(), err)
+		}
 	}()
 	reader := bufio.NewReader(conn)
 	for {
@@ -218,13 +248,18 @@ func (r *RemoteLoad) receiveHandle(ctx context.Context, conn net.Conn, receiveCh
 			}
 		}()
 		select {
-		case <-ctx.Done(): //不能因为ctx结束而导致有数据没有送进去从而导致缺失数据
-			log.Debugf("[server based on Backward(listen on admin:%v)]The receiving server detects that ctx ends, terminates the forwarding and closes the channel", conn.LocalAddr())
+		case <-timeOutChan: //当模块运行完成后，检测到这面还有数据没有传输完成，那么将会将此channel关闭
+			log.Debugf("[server based on Backward(listen on admin:%v)]The receiving server detects that timeOutChan closed, terminates the forwarding and closes the channel", conn.LocalAddr())
 			return
 		case line := <-stringCh:
 			line = bytes.TrimSuffix(line, []byte("\n"))
 			log.Debugf("[server based on Backward(listen on admin:%v)]receive server receive data form connect %v->%v and will write to channel:%s", conn.LocalAddr(), conn.LocalAddr(), conn.RemoteAddr(), line)
-			receiveChan <- line
+			select {
+			case <-timeOutChan:
+				log.Debugf("[server based on Backward(listen on admin:%v)]The receiving server detects that timeOutChan closed, terminates the forwarding and closes the channel", conn.LocalAddr())
+				return
+			case receiveChan <- line:
+			}
 		case err := <-errorCh:
 			if err != nil {
 				if err == io.EOF {
