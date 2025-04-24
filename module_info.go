@@ -14,6 +14,7 @@ type ModuleInfo struct {
 	*ModuleBaseInfo
 
 	ModulePath string `json:"module_path"` //模块的具体路径及文件名
+	ModuleHash string `json:"module_hash"`
 }
 
 func (m *ModuleInfo) GetInfo() *ModuleInfo {

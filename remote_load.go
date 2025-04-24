@@ -11,6 +11,7 @@ import (
 	"github.com/zyylhn/node-remote-load/moduleArgs"
 	"github.com/zyylhn/node-tree/admin"
 	"github.com/zyylhn/node-tree/admin/initial"
+	"github.com/zyylhn/node-tree/admin/manager"
 	"io"
 	"math/rand"
 	"net"
@@ -54,21 +55,54 @@ func (r *RemoteLoad) StartNodeManager(ctx context.Context, pushChan chan interfa
 	return r.Start(ctx, pushChan)
 }
 
+type RemoteLoadArgs struct {
+	TaskID     string
+	Module     ModuleLoad
+	Node       string
+	ResultChan chan []byte
+	Log        *golog.Logger
+	LoadDir    string
+	FileName   string
+	AutoDelete bool
+}
+
 // RemoteLoadOnNode 在指定节点上加载程序
 func (r *RemoteLoad) RemoteLoadOnNode(ctx context.Context, module ModuleLoad, node string, resultChan chan []byte, log *golog.Logger) ([]byte, error) {
-	return r.remoteLoad(ctx, "", module, node, resultChan, log)
+	return r.remoteLoad(ctx, &RemoteLoadArgs{
+		TaskID:     "",
+		Module:     module,
+		Node:       node,
+		ResultChan: resultChan,
+		Log:        log,
+		LoadDir:    "",
+		FileName:   "",
+		AutoDelete: true,
+	})
 }
 
 func (r *RemoteLoad) RemoteLoadOnNodeWithID(ctx context.Context, id string, module ModuleLoad, node string, resultChan chan []byte, log *golog.Logger) ([]byte, error) {
-	return r.remoteLoad(ctx, id, module, node, resultChan, log)
+	return r.remoteLoad(ctx, &RemoteLoadArgs{
+		TaskID:     id,
+		Module:     module,
+		Node:       node,
+		ResultChan: resultChan,
+		Log:        log,
+		LoadDir:    "",
+		FileName:   "",
+		AutoDelete: true,
+	})
 }
 
-func (r *RemoteLoad) remoteLoad(ctx context.Context, taskID string, module ModuleLoad, node string, resultChan chan []byte, log *golog.Logger) ([]byte, error) {
-	log = log.Clone()
-	log.SetPrefix(fmt.Sprintf("%v <%v:%v>", log.Prefix, "remoteLoad", module.GetInfo().Name))
+func (r *RemoteLoad) RemoteLoadWithConfig(ctx context.Context, config *RemoteLoadArgs) ([]byte, error) {
+	return r.remoteLoad(ctx, config)
+}
+
+func (r *RemoteLoad) remoteLoad(ctx context.Context, config *RemoteLoadArgs) ([]byte, error) {
+	config.Log = config.Log.Clone()
+	config.Log.SetPrefix(fmt.Sprintf("%v <%v:%v>", config.Log.Prefix, "remoteLoad", config.Module.GetInfo().Name))
 	var wg = &sync.WaitGroup{}
 	var timeOutChan = make(chan struct{})
-	if resultChan != nil {
+	if config.ResultChan != nil {
 		defer func() {
 			done := make(chan struct{})
 			// 远程加载已结束，等待数据传输完成
@@ -81,12 +115,12 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, taskID string, module Modul
 			case <-done:
 				close(timeOutChan)
 			case <-time.After(1 * time.Minute): //超时的话主动终止传输，触发此操作会导致没传输完成数据丢失。但是一般出现此情况可能是特殊网络转发延迟过高，或者程序自身bug
-				log.Errorf("remoteLoad read module result timeout,initiative terminate")
+				config.Log.Errorf("remoteLoad read module result timeout,initiative terminate")
 				close(timeOutChan)
 				// 然后继续等 wg.Wait() 真正完成
 				<-done
 			}
-			close(resultChan)
+			close(config.ResultChan)
 		}()
 	} else {
 		close(timeOutChan)
@@ -94,7 +128,7 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, taskID string, module Modul
 	newCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	//根据接口获取参数
-	args, err := module.GetArgs()
+	args, err := config.Module.GetArgs()
 	if err != nil {
 		cancel()
 		return nil, err
@@ -105,7 +139,7 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, taskID string, module Modul
 		var request moduleArgs.RequestInfo
 		if arg.ArgType == moduleArgs.OnlyBackward {
 			request.Type = moduleArgs.OnlyBackward
-			rPort, err := r.startBackWard(ctx, node, string(arg.Arg), log)
+			rPort, err := r.startBackWard(ctx, config.Node, string(arg.Arg), config.Log)
 			if err != nil {
 				return nil, err
 			}
@@ -113,7 +147,7 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, taskID string, module Modul
 		} else if arg.ArgType == moduleArgs.PushResultAddr {
 			//需要指定推送结果的地址，模块接收到此类型的参数将会向指定地址推送消息
 			request.Type = moduleArgs.PushResultAddr
-			rPort, err := r.createReceiveHandle(ctx, timeOutChan, resultChan, node, log, wg)
+			rPort, err := r.createReceiveHandle(ctx, timeOutChan, config.ResultChan, config.Node, config.Log, wg)
 			if err != nil {
 				return nil, err
 			}
@@ -125,7 +159,7 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, taskID string, module Modul
 			} else {
 				request.Type = moduleArgs.ArgsAddr
 			}
-			rPort, err := r.createArgsServer(ctx, arg.Arg, node, log)
+			rPort, err := r.createArgsServer(ctx, arg.Arg, config.Node, config.Log)
 			if err != nil {
 				return nil, err
 			}
@@ -147,7 +181,7 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, taskID string, module Modul
 	var readErr error
 	success := false
 	for i := 0; i < retryNum; i++ {
-		moduleFile, readErr = os.Open(module.GetInfo().ModulePath)
+		moduleFile, readErr = os.Open(config.Module.GetInfo().ModulePath)
 		if readErr != nil {
 			time.Sleep(time.Second * 2)
 			continue
@@ -157,7 +191,7 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, taskID string, module Modul
 		}
 	}
 	if !success {
-		return nil, fmt.Errorf("读取模块%v:%v出现异常:%v", module.GetInfo().Name, module.GetInfo().ModulePath, readErr)
+		return nil, fmt.Errorf("读取模块%v:%v出现异常:%v", config.Module.GetInfo().Name, config.Module.GetInfo().ModulePath, readErr)
 	}
 	var argsJson []byte
 	//因为部分模块不需要参数，所以newArgs可能为空
@@ -167,11 +201,18 @@ func (r *RemoteLoad) remoteLoad(ctx context.Context, taskID string, module Modul
 			return nil, err
 		}
 	}
-	remoteModule, err := r.Mgr.RemoteLoadManager.NewRemoteLoadWithTaskID(newCtx, taskID, moduleFile, string(argsJson), module.GetInfo().Name)
+	//remoteModule, err := r.Mgr.RemoteLoadManager.NewRemoteLoadWithTaskID(newCtx, config.TaskID, moduleFile, string(argsJson), config.Module.GetInfo().Name)
+	remoteModule, err := r.Mgr.RemoteLoadManager.NewRemoteLoadWithConfig(newCtx, &manager.RemoteLoadConfig{
+		Module:     moduleFile,
+		Args:       string(argsJson),
+		ModuleName: config.Module.GetInfo().Name,
+		TaskID:     config.TaskID,
+		Hash:       config.Module.GetInfo().ModuleHash,
+	})
 	if err != nil {
 		return nil, err
 	}
-	re, err := remoteModule.LoadExec(node, "")
+	re, err := remoteModule.LoadExecWithFileName(config.Node, config.LoadDir, config.FileName, config.AutoDelete)
 	if err != nil {
 		return nil, err
 	}
