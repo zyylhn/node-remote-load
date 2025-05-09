@@ -371,7 +371,7 @@ func (r *RemoteLoad) startBackWard(ctx context.Context, uuid string, lAddr strin
 	var n int
 	var success bool
 	//在目标上监听端口做转发可能出现端口被占用的情况，这栗会采用从新获取端口多次尝试的方式
-	rand.Seed(time.Now().Unix())
+	rand.Seed(time.Now().UnixNano())
 	for i := 0; i < 99; i++ {
 		n = rand.Intn(55534-99) + 10000 + i //10000-65535
 		err := r.CreateBackward(lAddr, fmt.Sprintf("%v", n), uuid)
