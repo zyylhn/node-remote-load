@@ -290,7 +290,7 @@ func (r *RemoteLoad) receiveHandle(timeOutChan chan struct{}, conn net.Conn, rec
 		}()
 		select {
 		case <-timeOutChan: //当模块运行完成后，检测到这面还有数据没有传输完成，那么将会将此channel关闭
-			log.Debugf("[server based on Backward(listen on admin:%v)]The receiving server detects that timeOutChan closed, terminates the forwarding and closes the channel", conn.LocalAddr())
+			log.Warnf("[server based on Backward(listen on admin:%v)]The receiving server detects that timeOutChan closed, terminates the forwarding and closes the channel", conn.LocalAddr())
 			return
 		case line := <-stringCh:
 			line = bytes.TrimSuffix(line, []byte("\n"))
