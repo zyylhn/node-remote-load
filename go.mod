@@ -7,7 +7,7 @@ toolchain go1.23.2
 require (
 	github.com/kataras/golog v0.1.12
 	github.com/zyylhn/getlocaladdr v1.0.2
-	github.com/zyylhn/node-tree v1.0.19
+	github.com/zyylhn/node-tree v1.0.20
 )
 
 require (
